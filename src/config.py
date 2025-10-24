@@ -33,7 +33,7 @@ class Config:
         self.brave_search_mcp = "windsor/brave-search-mcp"
         self.exa_mcp = "joerup/exa-mcp"
         self.sonar = "akakak/sonar"
-        self.yahoo-finance-mcp = "aq_humor/yahoo-finance-mcp"
+        self.yahoo_finance_mcp = "aq_humor/yahoo-finance-mcp"
 
         # Logging
         self.debug = os.getenv("DEBUG", "false").lower() == "true"
