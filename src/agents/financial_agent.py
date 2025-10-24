@@ -21,7 +21,7 @@ class FinancialAgent:
     def __init__(self):
         self.name = "Financial Analysis Agent"
         self.model = config.financial_model
-        self.mcp_servers = [config.brave_search_mcp]
+        self.mcp_servers = [config.brave_search_mcp, config.exa_mcp, config.sonar]
         self.tools = [
             calculate_financial_ratios,
             calculate_valuation_metrics,
@@ -40,11 +40,11 @@ class FinancialAgent:
             timeout_s: int = 200
 
         subtasks = [
-            Subtask("financial_health", "Evaluate the most recent 2025 liquidity, solvency, and key ratios (profit margin, ROE, ROA, debt-to-equity)."),
-            Subtask("profitability", "Analyze the most recent 2025 revenue, net income, and margin trends over the past 3-5 years."),
-            Subtask("valuation", "Compute or summarize the most recent 2025 valuation metrics (P/E, P/B, EV/EBITDA) and compare to peers."),
-            Subtask("cash_flow", "Assess the most recent 2025 operating cash flow, free cash flow, and capex requirements."),
-            Subtask("balance_sheet", "Review the most recent 2025 debt levels, cash reserves, and asset quality."),
+            Subtask("financial_health", "Evaluate the most recent 2025 liquidity, solvency, and key ratios (profit margin, ROE, ROA, debt-to-equity). Use sonar to retrieve the most accurate and recent financial data"),
+            Subtask("profitability", "Analyze the most recent 2025 revenue, net income, and margin trends over the past 3-5 years. Use sonar to retrieve the most accurate and recent financial data"),
+            Subtask("valuation", "Compute or summarize the most recent 2025 valuation metrics (P/E, P/B, EV/EBITDA) and compare to peers. Use sonar to retrieve the most accurate and recent financial data"),
+            Subtask("cash_flow", "Assess the most recent 2025 operating cash flow, free cash flow, and capex requirements. Use sonar to retrieve the most accurate and recent financial data"),
+            Subtask("balance_sheet", "Review the most recent 2025 debt levels, cash reserves, and asset quality. Use sonar to retrieve the most accurate and recent financial data"),
         ]
 
         MICRO_PROMPT = """You are a financial analysis expert analyzing {ticker}.

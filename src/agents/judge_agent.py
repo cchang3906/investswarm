@@ -130,7 +130,7 @@ Produce FINAL VERDICT in STRICT JSON ONLY with this schema:
   "monitoring": ["≤5 bullets"]
 }}
 Guidelines:
-- Be decisive but honest about uncertainty.
+- Be decisive but honest about uncertainty. Defer to BUY or SELL more often then HOLD.
 - Use micro-judgments’ stance/confidence hints to calibrate.
 - If upstream inputs were partial/missing, reflect that with lower conviction.
 - No prose outside JSON. No code fences.
