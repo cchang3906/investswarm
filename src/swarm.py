@@ -19,14 +19,8 @@ class InvestSwarm:
 
     async def analyze_stock(self, stock_ticker: str, verbose: bool = True) -> Dict[str, Any]:
         """
-        Run complete stock analysis with agent swarm.
-
-        Args:
-            stock_ticker: Stock ticker symbol (e.g., "TSLA", "AAPL")
-            verbose: Whether to print progress updates
-
-        Returns:
-            Dictionary containing all analysis results and final verdict
+        Run stock analysis with ALL THREE research agents (financial, market, sentiment),
+        THEN the judge to synthesize a final verdict.
         """
         start_time = datetime.now()
         stock_ticker = stock_ticker.upper()
@@ -43,46 +37,62 @@ class InvestSwarm:
                 self._run_financial_analysis(stock_ticker, verbose),
                 self._run_market_analysis(stock_ticker, verbose),
                 self._run_sentiment_analysis(stock_ticker, verbose),
-                return_exceptions=True
+                return_exceptions=True,
             )
 
-            # Handle any exceptions from parallel execution
-            final_results = []
-            for i, result in enumerate(research_results):
+            keys_in_order = [
+                ("financial", "Financial Analysis Agent"),
+                ("market", "Market & Product Analysis Agent"),
+                ("sentiment", "Sentiment Analysis Agent"),
+            ]
+
+            results_map: Dict[str, Dict[str, Any]] = {}
+            for (key, pretty), result in zip(keys_in_order, research_results):
                 if isinstance(result, Exception):
-                    agent_names = ["financial", "market", "sentiment"]
-                    logger.error(f"Error in {agent_names[i]} agent: {str(result)}")
-                    final_results.append({
-                        "agent": agent_names[i],
-                        "agent_name": f"{agent_names[i].title()} Agent",
+                    logger.error(f"Error in {key} agent: {str(result)}")
+                    results_map[key] = {
+                        "agent": key,
+                        "agent_name": pretty,
                         "analysis": f"Error: {str(result)}",
-                        "status": "error"
-                    })
+                        "status": "error",
+                    }
                 else:
-                    final_results.append(result)
+                    results_map[key] = result
 
         except Exception as e:
             logger.error(f"Critical error during research phase: {str(e)}")
             return {
                 "status": "error",
                 "error": str(e),
-                "stock_ticker": stock_ticker
+                "stock_ticker": stock_ticker,
             }
 
+        # Phase 2: Judge synthesis
         if verbose:
             logger.info("\n" + "=" * 80)
             logger.info("Research phase complete. Starting judge agent...")
             logger.info("=" * 80 + "\n")
 
-        # Phase 2: Run judge agent to synthesize and provide verdict
+        # Assemble ordered list for judge
+        ordered_results: List[Dict[str, Any]] = [
+            results_map["financial"],
+            results_map["market"],
+            results_map["sentiment"],
+        ]
+
         try:
-            verdict_result = await self._run_judge(final_results, stock_ticker, verbose)
+            verdict_result = await self.judge_agent.judge(ordered_results, stock_ticker)
+            if verbose:
+                status = "✓" if verdict_result.get("status") == "success" else "✗"
+                logger.info(f"Judge Agent complete {status}\n")
         except Exception as e:
             logger.error(f"Error in judge agent: {str(e)}")
             verdict_result = {
                 "agent": "judge",
-                "verdict": f"Error: {str(e)}",
-                "status": "error"
+                "agent_name": "Judge & Verdict Agent",
+                "verdict": f"Error during judgment: {str(e)}",
+                "status": "error",
+                "stock_ticker": stock_ticker,
             }
 
         end_time = datetime.now()
@@ -100,81 +110,47 @@ class InvestSwarm:
             "timestamp": start_time.isoformat(),
             "duration_seconds": duration,
             "research": {
-                "financial": final_results[0],
-                "market": final_results[1],
-                "sentiment": final_results[2],
+                "financial": results_map["financial"],
+                "market": results_map["market"],
+                "sentiment": results_map["sentiment"],
             },
-            "verdict": verdict_result,
+            "verdict": verdict_result,  # <-- judge output, ready for CLI to print
         }
 
     async def _run_financial_analysis(self, stock_ticker: str, verbose: bool) -> Dict[str, Any]:
         """Run financial analysis agent."""
         if verbose:
             logger.info("[1/3] Financial Analysis Agent starting...")
-
         result = await self.financial_agent.analyze(stock_ticker)
-
         if verbose:
             status = "✓" if result["status"] == "success" else "✗"
             logger.info(f"[1/3] Financial Analysis Agent complete {status}\n")
-
         return result
 
     async def _run_market_analysis(self, stock_ticker: str, verbose: bool) -> Dict[str, Any]:
         """Run market analysis agent."""
         if verbose:
             logger.info("[2/3] Market & Product Analysis Agent starting...")
-
         result = await self.market_agent.analyze(stock_ticker)
-
         if verbose:
             status = "✓" if result["status"] == "success" else "✗"
             logger.info(f"[2/3] Market & Product Analysis Agent complete {status}\n")
-
         return result
 
     async def _run_sentiment_analysis(self, stock_ticker: str, verbose: bool) -> Dict[str, Any]:
         """Run sentiment analysis agent."""
         if verbose:
             logger.info("[3/3] Sentiment Analysis Agent starting...")
-
         result = await self.sentiment_agent.analyze(stock_ticker)
-
         if verbose:
             status = "✓" if result["status"] == "success" else "✗"
             logger.info(f"[3/3] Sentiment Analysis Agent complete {status}\n")
-
-        return result
-
-    async def _run_judge(
-        self,
-        research_results: List[Dict[str, Any]],
-        stock_ticker: str,
-        verbose: bool
-    ) -> Dict[str, Any]:
-        """Run judge agent to provide final verdict."""
-        if verbose:
-            logger.info("Judge Agent evaluating research and formulating verdict...")
-
-        result = await self.judge_agent.judge(research_results, stock_ticker)
-
-        if verbose:
-            status = "✓" if result["status"] == "success" else "✗"
-            logger.info(f"Judge Agent complete {status}\n")
-
         return result
 
 
 async def analyze_stock(stock_ticker: str, verbose: bool = True) -> Dict[str, Any]:
     """
     Convenience function to analyze a stock.
-
-    Args:
-        stock_ticker: Stock ticker symbol
-        verbose: Whether to print progress updates
-
-    Returns:
-        Analysis results and verdict
     """
     swarm = InvestSwarm()
     return await swarm.analyze_stock(stock_ticker, verbose)

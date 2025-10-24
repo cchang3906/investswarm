@@ -40,16 +40,26 @@ def print_verdict(verdict_data: dict):
     Args:
         verdict_data: Verdict dictionary from judge agent
     """
+    import json as _json
+
     print("\n" + "=" * 80)
     print("FINAL VERDICT")
     print("=" * 80 + "\n")
 
-    if verdict_data["status"] == "success":
-        print(verdict_data["verdict"])
+    status = verdict_data.get("status", "error")
+    verdict = verdict_data.get("verdict", "Unknown verdict")
+
+    if status == "success":
+        # Pretty-print dict or list results
+        if isinstance(verdict, (dict, list)):
+            print(_json.dumps(verdict, indent=2, ensure_ascii=False))
+        else:
+            print(str(verdict))
     else:
-        print(f"Error: {verdict_data.get('verdict', 'Unknown error')}")
+        print(f"Error: {verdict}")
 
     print("\n" + "=" * 80)
+
 
 
 def print_research_summary(research_data: dict):

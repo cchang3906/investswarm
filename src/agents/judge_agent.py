@@ -1,146 +1,158 @@
 """Judge Agent - Synthesizes research and provides final verdict."""
 
-from dedalus_labs import AsyncDedalus, DedalusRunner
+from dataclasses import dataclass
+import asyncio, json
 from typing import List, Dict, Any
 
+from dedalus_labs import AsyncDedalus, DedalusRunner
 from ..config import config
+from ..utils.json_utils import parse_model_json
 
 
 class JudgeAgent:
-    """Agent that judges the debate and provides final verdict."""
+    """Agent that judges the debate and provides final verdict via batched subtasks."""
 
     def __init__(self):
         self.name = "Judge & Verdict Agent"
-        self.models = config.judge_models
-        self.mcp_servers = []  # Judge doesn't need external search
+        # You can keep model handoffs here if you like; no tools/MCPs are used.
+        # Using a single synth model can be more stable; swap to self.models if desired.
+        self.model = "openai/gpt-5"
+        self.mcp_servers: List[str] = []
+        self.tools: List[Any] = []
 
     async def judge(self, research_results: List[Dict[str, Any]], stock_ticker: str) -> Dict[str, Any]:
         """
-        Judge the debate between agents and provide final verdict.
-
-        Args:
-            research_results: List of analysis results from all agents
-            stock_ticker: Stock ticker symbol
-
-        Returns:
-            Dictionary containing final verdict
+        Batched judging:
+          1) Parallel micro-judgments (summaries, agreements/conflicts, weighing, risks/opps)
+          2) Reduce to final BUY/HOLD/SELL verdict JSON
         """
         client = AsyncDedalus()
         runner = DedalusRunner(client)
 
-        # Compile all research into context
-        context_parts = []
-        for result in research_results:
-            if result["status"] == "success":
-                context_parts.append(
-                    f"{'=' * 80}\n"
-                    f"{result['agent_name'].upper()}\n"
-                    f"{'=' * 80}\n\n"
-                    f"{result['analysis']}\n"
+        # Make the upstream agent outputs compact JSON for the judge to consume.
+        # We pass only the 'agent', 'agent_name', 'status', and 'analysis' fields through.
+        compact_inputs = []
+        for r in research_results:
+            compact_inputs.append({
+                "agent": r.get("agent"),
+                "agent_name": r.get("agent_name"),
+                "status": r.get("status"),
+                "analysis": r.get("analysis"),  # may be dict (your reducers) or string on error
+            })
+        inputs_json = json.dumps(compact_inputs, ensure_ascii=False)
+
+        @dataclass
+        class Subtask:
+            name: str
+            instruction: str
+            timeout_s: int = 120  # judge is fast; adjust as needed
+
+        subtasks = [
+            Subtask(
+                "summarize_financial",
+                "Summarize the Financial agent’s core arguments, stance, and confidence (≤120 words)."
+            ),
+            Subtask(
+                "summarize_market",
+                "Summarize the Market & Product agent’s core arguments, stance, and confidence (≤120 words)."
+            ),
+            Subtask(
+                "summarize_sentiment",
+                "Summarize the Sentiment agent’s core arguments, stance, and confidence (≤120 words)."
+            ),
+            Subtask(
+                "agreements_conflicts",
+                "Identify agreements and conflicts across the three agents. Be precise and cite which agents agree/disagree."
+            ),
+            Subtask(
+                "weigh_evidence",
+                "Weigh the evidence across fundamentals, market position, and sentiment. Prioritize quantitative/verified points."
+            ),
+            Subtask(
+                "risks_opportunities",
+                "List top risks (≤5) and top opportunities (≤5) that are most decision-relevant."
+            ),
+        ]
+
+        MICRO_PROMPT = """You are the investment judge for {ticker}.
+You will receive a JSON array of agent analyses:
+{inputs}
+
+Task: {instruction}
+
+Return STRICT JSON ONLY:
+{{
+  "summary": "≤120 words",
+  "bullets": ["string", ...],
+  "stance_hint": "BULLISH|BEARISH|NEUTRAL|MIXED|UNKNOWN",
+  "confidence_hint": 0-10
+}}
+No prose outside JSON. No code fences.
+"""
+
+        async def run_subtask(subtask: Subtask):
+            prompt = MICRO_PROMPT.format(ticker=stock_ticker, inputs=inputs_json, instruction=subtask.instruction)
+            try:
+                result = await asyncio.wait_for(
+                    runner.run(
+                        input=prompt,
+                        model=self.model,   # keep simple; no tools/MCPs
+                        stream=False
+                    ),
+                    timeout=subtask.timeout_s
                 )
-            else:
-                context_parts.append(
-                    f"{'=' * 80}\n"
-                    f"{result['agent_name'].upper()} - ERROR\n"
-                    f"{'=' * 80}\n\n"
-                    f"{result['analysis']}\n"
-                )
+                return parse_model_json(result.final_output)
+            except Exception as e:
+                return {
+                    "summary": f"{subtask.name} failed: {e}",
+                    "bullets": [],
+                    "stance_hint": "UNKNOWN",
+                    "confidence_hint": 0
+                }
 
-        full_context = "\n".join(context_parts)
+        # ---- Parallel map phase ----
+        micro_results = await asyncio.gather(*[run_subtask(s) for s in subtasks])
 
-        prompt = f"""You are a senior investment analyst and portfolio manager with decades of experience. You are judging a debate between three AI agents who have researched {stock_ticker} from different perspectives.
+        # ---- Reduce phase: final verdict JSON ----
+        reduce_prompt = f"""You are a senior portfolio manager. Synthesize the following micro-judgments for {stock_ticker}:
 
-RESEARCH FINDINGS:
-{full_context}
+Micro-judgments JSON:
+{json.dumps(micro_results, ensure_ascii=False)}
 
-YOUR TASK:
-
-As an impartial judge, synthesize these analyses and provide a comprehensive investment verdict.
-
-**Step 1: Analyze Each Perspective**
-- Summarize the key arguments from the Financial Analysis Agent
-- Summarize the key arguments from the Market & Product Analysis Agent
-- Summarize the key arguments from the Sentiment Analysis Agent
-- Note the perspective (bullish/bearish/neutral) and confidence level of each
-
-**Step 2: Identify Agreements and Conflicts**
-- Where do the agents agree? What consensus exists?
-- Where do they disagree? What are the key points of contention?
-- Are there contradictions that need to be resolved?
-- Which arguments are most compelling and evidence-based?
-
-**Step 3: Weigh the Evidence**
-- Evaluate the strength of financial fundamentals
-- Assess the competitive position and market opportunity
-- Consider the sentiment and momentum factors
-- Identify the most critical factors for this investment decision
-
-**Step 4: Consider Risk and Opportunity**
-- What are the key risks identified across analyses?
-- What are the main growth opportunities?
-- What could go wrong? (downside scenarios)
-- What could go right? (upside scenarios)
-- What is the risk/reward profile?
-
-**Step 5: Provide Final Verdict**
-
-Your verdict must include:
-
-1. **Investment Recommendation**: BUY, HOLD, or SELL
-   - Be clear and decisive
-
-2. **Conviction Level**: Rate your confidence from 1-10
-   - 1-3: Low conviction, high uncertainty
-   - 4-6: Moderate conviction, some uncertainty
-   - 7-10: High conviction, strong evidence
-
-3. **Price Target or Timeframe** (if applicable):
-   - Expected return potential
-   - Investment timeframe (short/medium/long term)
-
-4. **Key Reasoning**:
-   - 3-5 bullet points explaining your decision
-   - Focus on the most critical factors
-   - Be specific and data-driven
-
-5. **Main Risks**:
-   - Top 3 risks to your thesis
-   - What would make you change your mind?
-
-6. **Monitoring Points**:
-   - What metrics or events should investors watch?
-   - What would validate or invalidate this thesis?
-
-**IMPORTANT GUIDELINES**:
-- Be intellectually honest - acknowledge uncertainties
-- Weight quantitative evidence (financials, metrics) heavily
-- Consider both fundamental and sentiment factors
-- Think like a professional investor, not a cheerleader
-- If evidence is mixed or contradictory, reflect that in your conviction level
-- Focus on risk-adjusted returns, not just potential upside
-
-Use GPT-5 for the analytical synthesis, then hand off to Claude for writing the final verdict in a clear, professional format."""
+Produce FINAL VERDICT in STRICT JSON ONLY with this schema:
+{{
+  "recommendation": "BUY|HOLD|SELL",
+  "conviction": 1-10,
+  "timeframe": "SHORT|MEDIUM|LONG|N/A",
+  "price_target": "string|N/A",
+  "key_reasoning": ["3-5 bullets"],
+  "main_risks": ["≤5 bullets"],
+  "monitoring": ["≤5 bullets"]
+}}
+Guidelines:
+- Be decisive but honest about uncertainty.
+- Use micro-judgments’ stance/confidence hints to calibrate.
+- If upstream inputs were partial/missing, reflect that with lower conviction.
+- No prose outside JSON. No code fences.
+"""
 
         try:
-            result = await runner.run(
-                input=prompt,
-                model=self.models,  # Will use model handoffs
+            reduce_result = await runner.run(
+                input=reduce_prompt,
+                model=self.model,   # or a handoff list if you prefer; no tools/MCPs here
                 stream=False
             )
-
-            return {
-                "agent": "judge",
-                "agent_name": self.name,
-                "verdict": result.final_output,
-                "status": "success",
-                "stock_ticker": stock_ticker
-            }
-
+            final_json = parse_model_json(reduce_result.final_output)
+            status = "success"
         except Exception as e:
-            return {
-                "agent": "judge",
-                "agent_name": self.name,
-                "verdict": f"Error during judgment: {str(e)}",
-                "status": "error",
-                "stock_ticker": stock_ticker
-            }
+            # On failure, expose micro_results so the caller can still display content
+            final_json = {"error": str(e), "partials": micro_results}
+            status = "partial"
+
+        return {
+            "agent": "judge",
+            "agent_name": self.name,
+            "verdict": final_json,
+            "status": status,
+            "stock_ticker": stock_ticker
+        }
