@@ -1,8 +1,11 @@
 """Sentiment Analysis Agent."""
-
-from dedalus_labs import AsyncDedalus, DedalusRunner
+from ..utils.json_utils import parse_model_json
+from dataclasses import dataclass
+import asyncio
+import json
 from typing import Dict, Any
 
+from dedalus_labs import AsyncDedalus, DedalusRunner
 from ..config import config
 from ..tools import score_sentiment, analyze_news_sentiment
 
@@ -18,101 +21,98 @@ class SentimentAgent:
 
     async def analyze(self, stock_ticker: str) -> Dict[str, Any]:
         """
-        Perform comprehensive sentiment analysis.
-
-        Args:
-            stock_ticker: Stock ticker symbol (e.g., "TSLA", "AAPL")
-
-        Returns:
-            Dictionary containing agent name and analysis results
+        Perform comprehensive sentiment analysis using batched subtasks.
         """
+        @dataclass
+        class Subtask:
+            name: str
+            instruction: str
+            timeout_s: int = 200
+
+        subtasks = [
+            Subtask("news_30d", "Aggregate last 30 days of news tone, key headlines, and trend direction; compute an overall news score."),
+            Subtask("analyst", "Summarize recent analyst ratings/changes and price targets; compute a consensus tilt."),
+            Subtask("social_retail", "Summarize social/retail chatter and velocity; indicate bullish/bearish/neutral with rationale."),
+            Subtask("insiders", "Summarize recent insider transactions and governance signals; indicate alignment or concern."),
+            Subtask("derivatives", "Summarize options/short-interest (put/call, SI %) and what it implies about positioning."),
+            Subtask("catalysts", "List near-term catalysts (earnings, product, regulatory) and expected sentiment impact."),
+        ]
+
+        MICRO_PROMPT = """You are a sentiment analysis expert for {ticker}.
+Task: {instruction}
+Return STRICT JSON:
+{{
+  "summary": "≤120 words",
+  "metrics": [{{"name": "string", "value": "string"}}],
+  "strengths": ["string", ...],
+  "weaknesses": ["string", ...],
+  "stance": "BULLISH|BEARISH|NEUTRAL",
+  "confidence": 0-10
+}}
+Only JSON. No prose outside the JSON.
+"""
+
+        async def run_subtask(runner, subtask: Subtask):
+            prompt = MICRO_PROMPT.format(ticker=stock_ticker, instruction=subtask.instruction)
+            try:
+                result = await asyncio.wait_for(
+                    runner.run(
+                        input=prompt,
+                        model=self.model,
+                        tools=self.tools,
+                        mcp_servers=self.mcp_servers,
+                        stream=False,
+                    ),
+                    timeout=subtask.timeout_s,
+                )
+                return parse_model_json(result.final_output)
+            except Exception as e:
+                return {
+                    "summary": f"{subtask.name} failed: {e}",
+                    "metrics": [],
+                    "strengths": [],
+                    "weaknesses": [],
+                    "stance": "NEUTRAL",
+                    "confidence": 0,
+                }
+
+        # ---- Parallel map phase ----
         client = AsyncDedalus()
         runner = DedalusRunner(client)
+        micro_results = await asyncio.gather(*[run_subtask(runner, s) for s in subtasks])
 
-        prompt = f"""You are a sentiment analysis expert. Conduct a thorough sentiment analysis of {stock_ticker}.
-
-Your analysis should cover:
-
-1. **News Sentiment**:
-   - Recent news articles (past 30 days)
-   - Major news events and their impact
-   - Media tone and coverage frequency
-   - Sentiment trends over time
-
-2. **Analyst Sentiment**:
-   - Recent analyst ratings (buy/hold/sell)
-   - Rating changes and upgrades/downgrades
-   - Price target changes
-   - Analyst consensus and divergence
-
-3. **Social Media & Retail Sentiment**:
-   - Social media mentions and trends
-   - Retail investor sentiment
-   - Community discussions and debates
-   - Influencer opinions
-
-4. **Management & Insider Activity**:
-   - Management reputation and track record
-   - Recent insider buying or selling
-   - Executive compensation alignment
-   - Corporate governance quality
-
-5. **Market Sentiment Indicators**:
-   - Short interest levels and trends
-   - Options market sentiment (put/call ratios)
-   - Institutional ownership changes
-   - Fund flows and positioning
-
-6. **Forward-Looking Sentiment**:
-   - Upcoming catalysts (earnings, product launches, etc.)
-   - Market expectations vs. reality
-   - Potential sentiment drivers
-
-**Search Strategy**:
-- Use Brave Search for recent news articles and analyst reports
-- Use Exa for semantic search of sentiment and opinion pieces
-- Look for recent insider trading activity
-- Find social media trends and discussions
-- Search for analyst rating changes
-
-**Sentiment Scoring**:
-- Use the score_sentiment tool on news headlines and summaries
-- Aggregate sentiment across multiple sources
-- Identify sentiment shifts and momentum
-
-**Output Format**:
-Provide a structured analysis with:
-- Overall sentiment score and classification (bullish/bearish/neutral)
-- News sentiment summary with key headlines
-- Analyst consensus and recent changes
-- Social/retail sentiment assessment
-- Management and insider activity analysis
-- Upcoming catalysts or concerns
-- Your overall sentiment perspective: BULLISH, BEARISH, or NEUTRAL
-- Confidence level (1-10)
-
-Be comprehensive and cite specific sources. This analysis will be part of a debate with other agents."""
+        # ---- Reduce phase ----
+        reduce_prompt = f"""You are the sentiment judge synthesizing multiple partial analyses of {stock_ticker}.
+Input JSON list below. Summarize overlaps/conflicts and output final structured JSON:
+{{
+  "overall_summary": "≤150 words",
+  "news_headlines": ["≤5 bullets"],
+  "analyst_consensus": "BUY|HOLD|SELL|MIXED|UNKNOWN",
+  "overall_stance": "BULLISH|BEARISH|NEUTRAL",
+  "confidence": 0-10,
+  "key_risks": ["≤5 bullets"],
+  "upcoming_catalysts": ["≤5 bullets"]
+}}
+Input:
+{json.dumps(micro_results, ensure_ascii=False)}
+Return only JSON.
+"""
 
         try:
-            result = await runner.run(
-                input=prompt,
-                model=self.model,
-                tools=self.tools,
-                mcp_servers=self.mcp_servers,
-                stream=False
+            reduce_result = await runner.run(
+                input=reduce_prompt,
+                model=self.model,  # or "openai/gpt-5" if preferred
+                stream=False,
             )
-
-            return {
-                "agent": "sentiment",
-                "agent_name": self.name,
-                "analysis": result.final_output,
-                "status": "success"
-            }
-
+            final_json = parse_model_json(reduce_result.final_output)
+            status = "success"
         except Exception as e:
-            return {
-                "agent": "sentiment",
-                "agent_name": self.name,
-                "analysis": f"Error during analysis: {str(e)}",
-                "status": "error"
-            }
+            final_json = {"error": str(e), "partials": micro_results}
+            status = "partial"
+
+        return {
+            "agent": "sentiment",
+            "agent_name": self.name,
+            "analysis": final_json,
+            "status": status,
+        }

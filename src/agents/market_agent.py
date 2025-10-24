@@ -1,8 +1,11 @@
 """Market and Product Analysis Agent."""
-
-from dedalus_labs import AsyncDedalus, DedalusRunner
+from ..utils.json_utils import parse_model_json
+from dataclasses import dataclass
+import asyncio
+import json
 from typing import Dict, Any
 
+from dedalus_labs import AsyncDedalus, DedalusRunner
 from ..config import config
 
 
@@ -17,97 +20,99 @@ class MarketAgent:
 
     async def analyze(self, stock_ticker: str) -> Dict[str, Any]:
         """
-        Perform comprehensive market and product analysis.
-
-        Args:
-            stock_ticker: Stock ticker symbol (e.g., "TSLA", "AAPL")
-
-        Returns:
-            Dictionary containing agent name and analysis results
+        Perform comprehensive market and product analysis using batched subtasks.
         """
+        @dataclass
+        class Subtask:
+            name: str
+            instruction: str
+            timeout_s: int = 200
+
+        subtasks = [
+            Subtask("market_size", "Estimate TAM/SAM/SOM and market growth rate; include latest 2025 comps if available."),
+            Subtask("competition", "Identify key competitors, relative shares, differentiators, and threat level."),
+            Subtask("product", "Evaluate core products/services, roadmap/innovation cadence, and customer satisfaction signals."),
+            Subtask("moat", "Assess moat (network effects, brand, IP, cost/switching/regulatory advantages); rate wide/narrow/none."),
+            Subtask("growth_ops", "Outline growth vectors: geo expansion, new SKUs, partnerships, M&A; add near-term catalysts."),
+            Subtask("risks", "Highlight principal market risks: saturation, disruption, regulatory, pricing pressure."),
+        ]
+
+        MICRO_PROMPT = """You are a market and product analysis expert analyzing {ticker}.
+Task: {instruction}
+Return STRICT JSON:
+{{
+  "summary": "≤120 words",
+  "metrics": [{{"name": "string", "value": "string"}}],
+  "strengths": ["string", ...],
+  "weaknesses": ["string", ...],
+  "stance": "BULLISH|BEARISH|NEUTRAL",
+  "confidence": 0-10
+}}
+Only JSON. No prose outside the JSON.
+"""
+
+        async def run_subtask(runner, subtask: Subtask):
+            prompt = MICRO_PROMPT.format(ticker=stock_ticker, instruction=subtask.instruction)
+            try:
+                result = await asyncio.wait_for(
+                    runner.run(
+                        input=prompt,
+                        model=self.model,
+                        tools=self.tools,
+                        mcp_servers=self.mcp_servers,
+                        stream=False,
+                    ),
+                    timeout=subtask.timeout_s,
+                )
+                return parse_model_json(result.final_output)
+            except Exception as e:
+                return {
+                    "summary": f"{subtask.name} failed: {e}",
+                    "metrics": [],
+                    "strengths": [],
+                    "weaknesses": [],
+                    "stance": "NEUTRAL",
+                    "confidence": 0,
+                }
+
+        # ---- Parallel map phase ----
         client = AsyncDedalus()
         runner = DedalusRunner(client)
+        micro_results = await asyncio.gather(*[run_subtask(runner, s) for s in subtasks])
 
-        prompt = f"""You are a market and product analysis expert. Conduct a thorough market analysis of {stock_ticker}.
-
-Your analysis should cover:
-
-1. **Market Position & Size**:
-   - Total Addressable Market (TAM) size and growth rate
-   - Company's current market share
-   - Market dynamics and trends
-   - Geographic presence and expansion opportunities
-
-2. **Competitive Landscape**:
-   - Key competitors and their market shares
-   - Competitive advantages and disadvantages
-   - Barriers to entry in the market
-   - Competitive threats (new entrants, substitutes)
-
-3. **Product Analysis**:
-   - Core products/services and their differentiation
-   - Product portfolio strength and diversity
-   - Innovation pipeline and R&D effectiveness
-   - Product quality and customer satisfaction
-
-4. **Economic Moat**:
-   - Network effects
-   - Brand strength and customer loyalty
-   - Cost advantages
-   - Switching costs
-   - Regulatory advantages
-   - Intellectual property and patents
-
-5. **Growth Opportunities**:
-   - New market opportunities
-   - Product expansion potential
-   - Strategic partnerships and acquisitions
-   - Industry tailwinds and secular trends
-
-6. **Market Risks**:
-   - Competitive pressures
-   - Market saturation
-   - Technological disruption
-   - Regulatory changes
-
-**Search Strategy**:
-- Use Exa for deep semantic search on market research and industry reports
-- Use Brave Search for recent market news and competitive intelligence
-- Look for industry analyst reports, market research, and competitive analyses
-- Find customer reviews, product comparisons, and expert opinions
-
-**Output Format**:
-Provide a structured analysis with:
-- Market size and growth metrics
-- Competitive positioning assessment
-- Product strength evaluation
-- Moat analysis (wide/narrow/none)
-- Growth potential assessment
-- Your overall market perspective: BULLISH, BEARISH, or NEUTRAL
-- Confidence level (1-10)
-- Key opportunities and threats
-
-Be specific and cite sources. This analysis will be part of a debate with other agents."""
+        # ---- Reduce phase ----
+        reduce_prompt = f"""You are the market judge synthesizing multiple partial analyses of {stock_ticker}.
+Input JSON list below. Summarize overlaps/conflicts and output final structured JSON:
+{{
+  "overall_summary": "≤150 words",
+  "key_strengths": ["≤5 bullets"],
+  "key_weaknesses": ["≤5 bullets"],
+  "moat": "WIDE|NARROW|NONE|UNCERTAIN",
+  "overall_stance": "BULLISH|BEARISH|NEUTRAL",
+  "confidence": 0-10
+}}
+Input:
+{json.dumps(micro_results, ensure_ascii=False)}
+Return only JSON.
+"""
 
         try:
-            result = await runner.run(
-                input=prompt,
-                model=self.model,
-                mcp_servers=self.mcp_servers,
+            # Market/Sentiment reduce phase — REPLACE your runner.run(...) with:
+            reduce_result = await runner.run(
+                input=reduce_prompt,
+                model="openai/gpt-5",   # safe synth model
+                # Do NOT pass tools or mcp_servers here
                 stream=False
             )
-
-            return {
-                "agent": "market",
-                "agent_name": self.name,
-                "analysis": result.final_output,
-                "status": "success"
-            }
-
+            final_json = parse_model_json(reduce_result.final_output)
+            status = "success"
         except Exception as e:
-            return {
-                "agent": "market",
-                "agent_name": self.name,
-                "analysis": f"Error during analysis: {str(e)}",
-                "status": "error"
-            }
+            final_json = {"error": str(e), "partials": micro_results}
+            status = "partial"
+
+        return {
+            "agent": "market",
+            "agent_name": self.name,
+            "analysis": final_json,
+            "status": status,
+        }

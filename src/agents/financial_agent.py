@@ -1,4 +1,5 @@
 """Financial Analysis Agent."""
+from ..utils.json_utils import parse_model_json
 from dataclasses import dataclass
 import asyncio, json
 
@@ -36,7 +37,7 @@ class FinancialAgent:
         class Subtask:
             name: str
             instruction: str
-            timeout_s: int = 90
+            timeout_s: int = 200
 
         subtasks = [
             Subtask("financial_health", "Evaluate the most recent 2025 liquidity, solvency, and key ratios (profit margin, ROE, ROA, debt-to-equity)."),
@@ -73,7 +74,7 @@ class FinancialAgent:
                     ),
                     timeout=subtask.timeout_s
                 )
-                return json.loads(result.final_output)
+                return parse_model_json(result.final_output)
             except Exception as e:
                 return {"summary": f"{subtask.name} failed: {e}", "confidence": 0}
 
@@ -103,7 +104,7 @@ class FinancialAgent:
                 model="openai/gpt-5",  # or self.model if preferred
                 stream=False
             )
-            final_json = json.loads(reduce_result.final_output)
+            final_json = parse_model_json(reduce_result.final_output)
             status = "success"
         except Exception as e:
             final_json = {"error": str(e), "partials": micro_results}
