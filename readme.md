@@ -1,13 +1,12 @@
 multi-agent system powered by [Dedalus Labs](https://dedaluslabs.ai) that analyzes stocks from three different perspectives in parallel, then synthesizes the research through a debate judged by a final LLM.
 
-## Overview
+Overview
 1. Financial Analysis Agent - Analyzes financial statements, ratios, profitability, cash flow, and balance sheet strength
 2. Market & Product Analysis Agent - Evaluates market position, competitive landscape, product strength, and economic moat
 3. Sentiment Analysis Agent - Assesses news sentiment, analyst ratings, social media, and insider activity
 4. Judge Agent - Synthesizes all research, identifies agreements/conflicts, and provides a final investment verdict
 
-### Prerequisites
-
+Prerequisites
 - Python 3.8 or higher
 - Dedalus API key (get one at [dedaluslabs.ai](https://dedaluslabs.ai))
 
