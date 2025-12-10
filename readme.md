@@ -11,10 +11,10 @@ Prerequisites
 - Dedalus API key (get one at [dedaluslabs.ai](https://dedaluslabs.ai))
 
 Use:
-  python main.py TSLA                    # analyze Tesla stock
-  python main.py AAPL -o results.json    # analyze Apple and save to file
-  python main.py MSFT --show-research    # show detailed research from all agents
-  python main.py NVDA -q                 # only show verdict
+- python main.py TSLA                    # analyze Tesla stock
+- python main.py AAPL -o results.json    # analyze Apple and save to file
+- python main.py MSFT --show-research    # show detailed research from all agents
+- python main.py NVDA -q                 # only show verdict
 
 Financial Analysis Agent
 - Model: GPT-5
