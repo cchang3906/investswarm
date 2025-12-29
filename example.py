@@ -12,7 +12,7 @@ from src.swarm import analyze_stock
 
 
 async def example_basic():
-    """Basic example - analyze a single stock."""
+    """analyze a single stock."""
     print("=" * 80)
     print("Example 1: Basic Stock Analysis")
     print("=" * 80 + "\n")
